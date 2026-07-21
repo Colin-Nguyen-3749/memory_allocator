@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <pthread.h>
 
 //========================
 // malloc
@@ -10,15 +11,59 @@
 //=========================
 void *malloc(size_t size) {
     
+    size_t total_size;
     void *block;
-    block = sbrk(size);
-    // On failure, sbrk() returns (void*) -1
-    if (block == (void*) -1) {
-        return NULL;
-    };
+    header_t *header;
 
-    // If success, n bytes (n = size) are allocated on the heap
-    return block;
+    // Check if the requested size is 0; return NULL if so
+    if (!size) return NULL;
+
+    // Since our size if valid, acquire the lock
+    pthread_mutex_lock(&global_malloc_lock);
+
+    // This traverses the linked list to see if there's already
+    // an existing block of memory marked as free and can accomodate
+    // the given size
+    header = get_free_block(size);
+
+    // Okay, we found a sufficiently large-enough free block. Now,
+    // the header pointer will refer to the header part of the block of 
+    // memory that wsa just found by traversing the list.
+    if (header) {
+        header->s.is_free = 0;
+        pthread_mutex_unlock(&global_malloc_lock);
+
+        // header + 1 points to the byte right after the end of the header
+        // This is also the first byte of the actual memory block, which is 
+        // what the caller is interested in. Cast this to void and return.
+        return (void*)(header + 1);
+    }
+
+    total_size = sizeof(header_t) + size;
+
+    // If a sufficiently large enough free block isn't found, extend the heao
+    // by calling sbrk(), which extends the heap by the size that fits the requested size 
+    // plus the header (total_size) which was computed above.
+    block = sbrk(total_size);
+
+    if (block == (void*) -1) {
+        pthread_mutex_unlock(&global_malloc_lock);
+        return NULL;
+    }
+
+    header = block;
+    header->s.size = size;
+    header->s.is_free = 0;
+    header->s.next = NULL;
+
+    if (!head) head = header;
+
+    if (!tail) tail->s.next = header;
+
+    tail = header;
+    pthread_mutex_unlock(&global_malloc_lock);
+
+    return (void*)(header + 1);
 }
 
 //==========================
@@ -48,3 +93,26 @@ union header {
 };
 
 typedef union header header_t;
+
+// Head and tail pointer to keep track of the list
+header_t *head, *tail;
+
+// Prevent multiple threads from concurrently accessing memory
+// Use a global lock so that before evey action you need to acquire the lock
+// and after you've finished, release the lock
+pthread_mutex_t global_malloc_lock;
+
+// idk what this is they didn't explain this
+header_t *get_free_block(size_t size) {
+
+    header_t *curr = head;
+    while (curr) {
+        if (curr->s.is_free && curr->s.size >= size) {
+            return curr;
+        }
+
+        curr = curr->s.next;
+    }
+
+    return NULL;
+}
