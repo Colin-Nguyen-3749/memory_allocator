@@ -1,6 +1,59 @@
 #include <unistd.h>
 #include <pthread.h>
 
+//==========================
+// header_t
+// This struct tracks the size of a block of memory
+// and whether or not it is free. We need size because 
+// when we have to free the memory pointed to by ptr, we 
+// need to know the size of what we're freeing.
+// Heap memory is contiguous, and we can only release memory 
+// that's at the end of the heap. However, freeing and releasing
+// memory are two different things. Freeing memory doesn't release
+// it back to the OS, but rather it's just marked as free and can 
+// be reused in a later malloc() call. 
+//============================
+
+typedef char ALIGN[16];
+
+union header {
+    struct {
+        size_t size;
+        unsigned is_free;
+
+        // Use a linked list to keep track of the memory
+        struct header_t *next;
+    } s;
+    ALIGN stub;
+};
+
+typedef union header header_t;
+
+// Head and tail pointer to keep track of the list
+header_t *head, *tail;
+
+// Prevent multiple threads from concurrently accessing memory
+// Use a global lock so that before evey action you need to acquire the lock
+// and after you've finished, release the lock
+pthread_mutex_t global_malloc_lock;
+
+// This searches through the linked list to find a block that's
+// been marked as 'free' and is the right size for what we want
+// If it's free, then return the location, if not, return NULL
+header_t *get_free_block(size_t size) {
+
+    header_t *curr = head;
+    while (curr) {
+        if (curr->s.is_free && curr->s.size >= size) {
+            return curr;
+        }
+
+        curr = curr->s.next;
+    }
+
+    return NULL;
+}
+
 //========================
 // malloc
 // This function allocates n bytes of memory 
@@ -64,59 +117,6 @@ void *malloc(size_t size) {
     pthread_mutex_unlock(&global_malloc_lock);
 
     return (void*)(header + 1);
-}
-
-//==========================
-// header_t
-// This struct tracks the size of a block of memory
-// and whether or not it is free. We need size because 
-// when we have to free the memory pointed to by ptr, we 
-// need to know the size of what we're freeing.
-// Heap memory is contiguous, and we can only release memory 
-// that's at the end of the heap. However, freeing and releasing
-// memory are two different things. Freeing memory doesn't release
-// it back to the OS, but rather it's just marked as free and can 
-// be reused in a later malloc() call. 
-//============================
-
-typedef char ALIGN[16];
-
-union header {
-    struct {
-        size_t size;
-        unsigned is_free;
-
-        // Use a linked list to keep track of the memory
-        struct header_t *next;
-    } s;
-    ALIGN stub;
-};
-
-typedef union header header_t;
-
-// Head and tail pointer to keep track of the list
-header_t *head, *tail;
-
-// Prevent multiple threads from concurrently accessing memory
-// Use a global lock so that before evey action you need to acquire the lock
-// and after you've finished, release the lock
-pthread_mutex_t global_malloc_lock;
-
-// This searches through the linked list to find a block that's
-// been marked as 'free' and is the right size for what we want
-// If it's free, then return the location, if not, return NULL
-header_t *get_free_block(size_t size) {
-
-    header_t *curr = head;
-    while (curr) {
-        if (curr->s.is_free && curr->s.size >= size) {
-            return curr;
-        }
-
-        curr = curr->s.next;
-    }
-
-    return NULL;
 }
 
 //======================================
@@ -208,4 +208,37 @@ void *calloc(size_t num, size_t nsize) {
     memset(block, 0, size);
 
     return block;
+}
+
+//====================================
+// realloc()
+// This function changes the size of the given 
+// memory block to the size given
+// INPUT: void *block, size_t size
+// OUTPUT: A new size for the memory block or  
+// the block of the same size
+//=====================================
+void *realloc(void *block, size_t size) {
+
+    header_t *header;
+    void *ret;
+
+    if (!block || !size) return malloc(size);
+    
+    // If the block already has the size to accomodate
+    // the requested size, then there's nothing to be done
+    header = (header_t*)block - 1;
+    if (header->s.size >= size) return block;
+
+    // If the block does not have the requested size, then call
+    // malloc() to get a block of the request size, and relocate contents
+    // to the new bigger block using memcpy(). 
+    // The old memory block is then freed.
+    ret = malloc(size);
+    if (ret) {
+        memcpy(ret, block, header->s.size);
+        free(block);
+    }
+
+    return ret;
 }
