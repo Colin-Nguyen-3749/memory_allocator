@@ -178,3 +178,34 @@ void free(void *block) {
     header->s.is_free = 1;
     pthread_mutex_unlock(&global_malloc_lock);
 }
+
+//====================================
+// calloc()
+// This function allocates memory for an array of 
+// n number of elements of m size bytes each and returns 
+// a pointer to the allocated memory. 
+// Additionally, the memory is all set to zeroes.
+// INPUT: size_t num, size_t nsize
+// OUTPUT: a pointer to the allocated memory
+//=====================================
+void *calloc(size_t num, size_t nsize) {
+
+    size_t size;
+    void *block;
+
+    // If num or nsize is invalid
+    if (!num || !nsize) return NULL;
+
+    size = num * nsize;
+    
+    // Check multiplicative overflow
+    if (nsize != size / num) return NULL;
+    block = malloc(size);
+    
+    if (!block) return NULL;
+    
+    // Clears the allocated memory to all zeroes
+    memset(block, 0, size);
+
+    return block;
+}
