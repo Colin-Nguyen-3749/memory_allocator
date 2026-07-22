@@ -4,8 +4,8 @@
 //========================
 // malloc
 // This function allocates n bytes of memory 
-// (where n represents size) and return a pointer
-// to the allocated memory
+// (where n represents size of what you want to store)
+// and return a pointer to the allocated memory
 // INPUT: size_t size (unsigned integer)
 // OUTPUT: none
 //=========================
@@ -28,7 +28,7 @@ void *malloc(size_t size) {
 
     // Okay, we found a sufficiently large-enough free block. Now,
     // the header pointer will refer to the header part of the block of 
-    // memory that wsa just found by traversing the list.
+    // memory that was just found by traversing the list.
     if (header) {
         header->s.is_free = 0;
         pthread_mutex_unlock(&global_malloc_lock);
@@ -41,7 +41,7 @@ void *malloc(size_t size) {
 
     total_size = sizeof(header_t) + size;
 
-    // If a sufficiently large enough free block isn't found, extend the heao
+    // If a sufficiently large enough free block isn't found, extend the heap
     // by calling sbrk(), which extends the heap by the size that fits the requested size 
     // plus the header (total_size) which was computed above.
     block = sbrk(total_size);
@@ -102,7 +102,9 @@ header_t *head, *tail;
 // and after you've finished, release the lock
 pthread_mutex_t global_malloc_lock;
 
-// idk what this is they didn't explain this
+// This searches through the linked list to find a block that's
+// been marked as 'free' and is the right size for what we want
+// If it's free, then return the location, if not, return NULL
 header_t *get_free_block(size_t size) {
 
     header_t *curr = head;
@@ -115,4 +117,48 @@ header_t *get_free_block(size_t size) {
     }
 
     return NULL;
+}
+
+//======================================
+// free()
+// This function has to first figure out if the 
+// block that's going to be freed is at the end of 
+// the heap or not. If it is, then it can be released
+// back to the OS. If not, then just mark it as 'free'
+// and then hope that we can reuse it later.
+//======================================
+void free(void *block) {
+    
+    header_t *header, *tmp;
+    void *programbreak;
+
+    if (!block) return;
+
+    pthread_mutex_lock(&global_malloc_lock);
+    header = (header_t*)block - 1;
+
+    programbreak = sbrk(0);
+
+    if ((char*)block + header->s.size == programbreak) {
+        if (head == tail) {
+            head = tail = NULL;
+        } else {
+            tmp = head;
+            while (tmp) {
+                if (tmp->s.next == tail) {
+                    tmp->s.next = NULL;
+                    tail = tmp;
+                }
+                tmp = tmp->s.next;
+            }
+        }
+
+        sbrk(0 - sizeof(header_t) - header->s.size);
+        pthread_mutex_unlock(&global_malloc_lock);
+
+        return;
+    }
+
+    header->s.is_free = 1;
+    pthread_mutex_unlock(&global_malloc_lock);
 }
