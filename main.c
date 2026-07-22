@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <string.h>
 #include <pthread.h>
 
 //==========================
@@ -22,7 +23,7 @@ union header {
         unsigned is_free;
 
         // Use a linked list to keep track of the memory
-        struct header_t *next;
+        union header *next;
     } s;
     ALIGN stub;
 };
@@ -30,7 +31,7 @@ union header {
 typedef union header header_t;
 
 // Head and tail pointer to keep track of the list
-header_t *head, *tail;
+header_t *head = NULL, *tail = NULL;
 
 // Prevent multiple threads from concurrently accessing memory
 // Use a global lock so that before evey action you need to acquire the lock
@@ -52,6 +53,66 @@ header_t *get_free_block(size_t size) {
     }
 
     return NULL;
+}
+
+//======================================
+// free()
+// This function has to first figure out if the 
+// block that's going to be freed is at the end of 
+// the heap or not. If it is, then it can be released
+// back to the OS. If not, then just mark it as 'free'
+// and then hope that we can reuse it later.
+//======================================
+void free(void *block) {
+    
+    header_t *header, *tmp;
+    void *programbreak;
+
+    if (!block) return;
+
+    pthread_mutex_lock(&global_malloc_lock);
+
+    // This gets the header of the block that we want to free
+    // We want to get a pointer that's behind the block by a distance 
+    // that equals the size of the header (which is why we subtract 1 below)
+    header = (header_t*)block - 1;
+
+    // This gives the current value of the program break
+    programbreak = sbrk(0);
+
+    // This searches for the end of the current block to check if the 
+    // block that we want to free is at the end of the heap
+    // (It's just parsing through the linked list, nothing more)
+    if ((char*)block + header->s.size == programbreak) {
+        if (head == tail) {
+            head = tail = NULL;
+        } else {
+            tmp = head;
+            while (tmp) {
+                if (tmp->s.next == tail) {
+                    tmp->s.next = NULL;
+                    tail = tmp;
+                }
+                tmp = tmp->s.next;
+            }
+        }
+
+        // If we are at the end, now we can shrink the size of the heap and 
+        // release memory back to the OS.
+        // Head and tail pointers are reset to reflect the loss of the last block.
+        // The amount of memory to be released is also calculated
+        // which is done by calling sbrk with the negative of this value (which is 
+        // why we subtract all of it from 0).
+        sbrk(0 - sizeof(header_t) - header->s.size);
+        pthread_mutex_unlock(&global_malloc_lock);
+
+        return;
+    }
+
+    // If the block is not the last one in the linked list, we set the is_free
+    // field to its header.
+    header->s.is_free = 1;
+    pthread_mutex_unlock(&global_malloc_lock);
 }
 
 //========================
@@ -119,66 +180,6 @@ void *malloc(size_t size) {
     return (void*)(header + 1);
 }
 
-//======================================
-// free()
-// This function has to first figure out if the 
-// block that's going to be freed is at the end of 
-// the heap or not. If it is, then it can be released
-// back to the OS. If not, then just mark it as 'free'
-// and then hope that we can reuse it later.
-//======================================
-void free(void *block) {
-    
-    header_t *header, *tmp;
-    void *programbreak;
-
-    if (!block) return;
-
-    pthread_mutex_lock(&global_malloc_lock);
-
-    // This gets the header of the block that we want to free
-    // We want to get a pointer that's behind the block by a distance 
-    // that equals the size of the header (which is why we subtract 1 below)
-    header = (header_t*)block - 1;
-
-    // This gives the current value of the program break
-    programbreak = sbrk(0);
-
-    // This searches for the end of the current block to check if the 
-    // block that we want to free is at the end of the heap
-    // (It's just parsing through the linked list, nothing more)
-    if ((char*)block + header->s.size == programbreak) {
-        if (head == tail) {
-            head = tail = NULL;
-        } else {
-            tmp = head;
-            while (tmp) {
-                if (tmp->s.next == tail) {
-                    tmp->s.next = NULL;
-                    tail = tmp;
-                }
-                tmp = tmp->s.next;
-            }
-        }
-
-        // If we are at the end, now we can shrink the size of the heap and 
-        // release memory back to the OS.
-        // Head and tail pointers are reset to reflect the loss of the last block.
-        // The amount of memory to be released is also calculated
-        // which is done by calling sbrk with the negative of this value (which is 
-        // why we subtract all of it from 0).
-        sbrk(0 - sizeof(header_t) - header->s.size);
-        pthread_mutex_unlock(&global_malloc_lock);
-
-        return;
-    }
-
-    // If the block is not the last one in the linked list, we set the is_free
-    // field to its header.
-    header->s.is_free = 1;
-    pthread_mutex_unlock(&global_malloc_lock);
-}
-
 //====================================
 // calloc()
 // This function allocates memory for an array of 
@@ -241,4 +242,17 @@ void *realloc(void *block, size_t size) {
     }
 
     return ret;
+}
+
+
+/* A debug function to print the entire link list */
+void print_mem_list()
+{
+	header_t *curr = head;
+	printf("head = %p, tail = %p \n", (void*)head, (void*)tail);
+	while(curr) {
+		printf("addr = %p, size = %zu, is_free=%u, next=%p\n",
+			(void*)curr, curr->s.size, curr->s.is_free, (void*)curr->s.next);
+		curr = curr->s.next;
+	}
 }
